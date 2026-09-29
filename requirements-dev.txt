@@ -1,0 +1,6 @@
+# Development, tests and model training — not installed in the production image.
+-r requirements.txt
+matplotlib==3.9.2
+pytest==8.3.3
+httpx==0.27.2
+fakeredis==2.25.1

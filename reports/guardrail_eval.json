@@ -1,0 +1,14 @@
+{
+  "input_guard": {
+    "passed": 18,
+    "total": 18,
+    "pass_rate": 100.0
+  },
+  "output_guard": {
+    "passed": 14,
+    "total": 14,
+    "pass_rate": 100.0
+  },
+  "overall_pass_rate": 100.0,
+  "failures": []
+}

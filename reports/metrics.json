@@ -1,0 +1,12 @@
+{
+  "accuracy": 67.12,
+  "precision": 57.14,
+  "recall": 66.03,
+  "f1": 61.27,
+  "auc_roc": 73.82,
+  "threshold": 0.4,
+  "n_train": 3200,
+  "n_test": 800,
+  "cv_f1_mean": 58.6,
+  "cv_f1_std": 1.27
+}

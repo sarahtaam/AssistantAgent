@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.env
+venv/
+.venv/
+data/*.db
+data/credit_score_cleaned.csv
+recouvrement/*.pkl
+assistant/rag/*.index
+assistant/rag/*.pkl
+.pytest_cache/
+*.egg-info/

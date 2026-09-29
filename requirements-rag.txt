@@ -1,0 +1,14 @@
+# Optional — semantic search over the knowledge base (FAISS + multilingual
+# embeddings). Adds ~2GB (torch). Install only if you want RAG:
+#     pip install -r requirements-rag.txt
+#     python scripts/build_index.py
+#
+# CPU-only torch is much smaller; prefer:
+#     pip install torch --index-url https://download.pytorch.org/whl/cpu
+#     pip install -r requirements-rag.txt
+faiss-cpu==1.9.0
+sentence-transformers==3.1.1
+torch==2.4.1
+pypdf==5.0.1
+python-docx==1.1.2
+openpyxl==3.1.5
