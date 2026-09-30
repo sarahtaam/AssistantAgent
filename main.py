@@ -1,5 +1,5 @@
 """
-main.py — NovaTel Collections Agent API.
+main.py — Assistant Agent API (billing & collections assistant).
 
 This is the trimmed public version: the conversational agent, scoring,
 and payment negotiation endpoints. The original system also has an
@@ -60,8 +60,8 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="NovaTel Collections Agent",
-    description="Conversational AI agent for invoice collections, risk scoring, and payment negotiation.",
+    title="Assistant Agent",
+    description="AI customer assistant for telecom billing and collections: risk scoring, payment-plan negotiation, and support escalation.",
     version="1.1",
     lifespan=lifespan,
 )

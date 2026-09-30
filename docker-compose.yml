@@ -1,10 +1,62 @@
+# Production-like local stack: API + Postgres + Redis.
+#
+#   cp .env.example .env              # then set JWT_SECRET and POSTGRES_PASSWORD
+#   docker compose up --build -d
+#   docker compose run --rm agent python seed.py     # optional: demo data
+#
+# Secrets come from .env (never committed). Compose refuses to start
+# without them rather than falling back to a default.
 services:
   agent:
     build: .
     ports:
       - "8000:8000"
     environment:
-      - GROQ_API_KEY=${GROQ_API_KEY:-}
-      - COMPANY_NAME=NovaTel
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://novatel:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/novatel
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      JWT_ISSUER: ${JWT_ISSUER:-}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      LLM_RATE_LIMITS: ${LLM_RATE_LIMITS:-20/minute;300/day}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      COMPANY_NAME: ${COMPANY_NAME:-NovaTel}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: novatel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: novatel
     volumes:
-      - ./data:/app/data
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U novatel -d novatel"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:

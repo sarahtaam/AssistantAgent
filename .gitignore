@@ -4,6 +4,7 @@ __pycache__/
 venv/
 .venv/
 data/*.db
+data/*.db.bak
 data/credit_score_cleaned.csv
 recouvrement/*.pkl
 assistant/rag/*.index

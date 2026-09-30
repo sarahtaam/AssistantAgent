@@ -1,9 +1,27 @@
-# NovaTel Collections Agent
+# Assistant Agent
 
-A conversational AI agent that negotiates payment plans with overdue telecom
-clients — combining a rules+ML hybrid risk score, retrieval-augmented
-responses, and LLM guardrails that keep a language model from ever touching
-the actual money math.
+An AI customer assistant for telecom billing and collections. It chats with
+clients who have overdue invoices, explains their situation, and negotiates a
+payment plan they can afford — served as a FastAPI backend.
+
+What it does in a conversation:
+
+- **Knows the client.** Pulls their invoices, payment history and line status,
+  and computes a 0-100 risk score from business rules (70%) blended with a
+  LightGBM model (30%).
+- **Negotiates payment plans.** Offers installment options sized to that
+  score. Amounts and due dates are calculated in plain Python — the language
+  model never touches the money math.
+- **Answers questions.** Retrieval-augmented responses from a knowledge base
+  (FAISS + multilingual embeddings), with an embedded fallback.
+- **Escalates problems.** Detects complaints (failed payment, identity
+  verification, technical issues) and opens a support ticket with the
+  client's consent.
+- **Stays safe.** Guardrails on input and output block prompt injection, data
+  leaks and hallucinated amounts; every endpoint is authenticated and
+  rate-limited.
+
+The demo company is the fictional "NovaTel" (set `COMPANY_NAME` to rebrand).
 
 This is the public, portfolio version of a system originally built for a
 real telecom operator. The company identity, contact details, database
@@ -142,16 +160,28 @@ probing, unrealistic amounts, genuine off-topic messages):
 | Input sanitization | 18/18 (100%) |
 | Output validation | 14/14 (100%) |
 
-**Test suite:** 44 tests across guardrails, intent classification, and
-payment-plan math (`pytest tests/ -v`).
+**Test suite:** 129 tests across guardrails, intent classification,
+payment-plan math, authentication and authorization, session ownership,
+rate limiting, both session backends, and the data-access queries
+(`pytest tests/ -v`). CI runs the suite twice: once on SQLite with in-memory
+sessions, once on Postgres + Redis.
 
 ## Running it
 
 ```bash
-pip install -r requirements.txt   # core deps only (~200MB)
-python seed.py                    # generates 25 synthetic clients
-python recouvrement/train.py      # trains the LightGBM model
+pip install -r requirements-dev.txt   # runtime + test/training tools
+cp .env.example .env                  # then set JWT_SECRET (see below)
+python seed.py                        # applies migrations + 25 synthetic clients
+python recouvrement/train.py          # trains the LightGBM model
 uvicorn main:app --reload
+```
+
+Every endpoint except `/health` and `/ready` needs a bearer token. Locally,
+mint one with the dev helper (it signs with your `JWT_SECRET`):
+
+```bash
+TOKEN=$(python scripts/issue_token.py --client-id 3)
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/client/assistant/auto-session/3
 ```
 
 That's a fully working agent. Semantic RAG search is optional — it needs
@@ -163,10 +193,12 @@ pip install -r requirements-rag.txt
 python scripts/build_index.py     # downloads the embedding model + builds the FAISS index
 ```
 
-Or with Docker (does all of the above at build time):
+Or the production-like stack with Docker (API + Postgres + Redis):
 
 ```bash
-docker compose up --build
+cp .env.example .env                              # set JWT_SECRET and POSTGRES_PASSWORD
+docker compose up --build -d
+docker compose run --rm agent python seed.py      # optional demo data
 ```
 
 Two things that fail *gracefully* rather than breaking the app:
@@ -188,7 +220,54 @@ Two things that fail *gracefully* rather than breaking the app:
   network-restricted CI environment), the script prints a clear message
   and exits non-zero - same fallback applies.
 
+## Security model
+
+- **Authentication.** The API doesn't own user accounts. It verifies JWTs
+  issued by the operator's identity provider: HS256 with `JWT_SECRET`, or
+  RS256/ES256 with `JWT_PUBLIC_KEY`, plus optional `JWT_ISSUER` /
+  `JWT_AUDIENCE` checks. Tokens must carry `exp`; `alg: none` and
+  unlisted algorithms are rejected.
+- **Authorization.** A client token (`sub` = client id, `role` = `client`)
+  can only act on that client. `client_id` in request bodies is optional and
+  must match the token if sent. Staff tokens (`role` = `staff`) can read any
+  client's risk score (`/scoring`, `/ml/score-combine`) but can't chat or
+  confirm plans for a client.
+- **Session ownership.** Each session records its client. Using another
+  client's `session_id` returns 403. Session ids are full random UUIDs.
+- **Rate limiting.** `/chat` and `/option-click` (the endpoints that can call
+  the paid LLM) are limited per client (`LLM_RATE_LIMITS`, default
+  `20/minute;300/day`) and return 429 with `Retry-After`. Messages are capped
+  at `MAX_MESSAGE_LENGTH` characters.
+- **CORS.** Only origins in `CORS_ALLOWED_ORIGINS` are allowed; credentials
+  mode is off, since tokens go in the `Authorization` header.
+
+## Deploying
+
+Set `APP_ENV=production` (the Docker image does). The app then refuses to
+start unless it has Postgres, `REDIS_URL`, a JWT key (a secret of 32+
+characters for HS256), and CORS origins without `*`.
+
+- **Database migrations** use Alembic (`migrations/`). The container runs
+  `alembic upgrade head` on start. With several replicas, set
+  `RUN_MIGRATIONS=false` on all but one, or run it as a separate release
+  step. To change the schema, edit `models.py`, then
+  `alembic revision --autogenerate -m "..."`, review the file, and commit it.
+  CI fails if the models and migrations drift apart (`alembic check`).
+- **Sessions and rate limits** live in Redis, so they're shared across
+  workers and replicas and survive restarts. Without `REDIS_URL` (dev only)
+  they're kept in process memory, and expired sessions are purged.
+- **Image.** A multi-stage build: compilers stay in the build stage, the
+  runtime image has no test tools or demo data, runs as a non-root user,
+  starts `WEB_CONCURRENCY` uvicorn workers (default 2), and has a
+  `HEALTHCHECK` on `/health`. Use `/ready` (database + Redis) for your
+  orchestrator's readiness probe. Behind a load balancer, set
+  `FORWARDED_ALLOW_IPS` to its address.
+- **Model.** Put the `model_*.pkl` files trained on real data in
+  `recouvrement/` before `docker build`. Without them, the build trains a
+  model on synthetic data, which is only good enough for a demo.
+
 ## Stack
 
-Python, FastAPI, SQLAlchemy, SQLite, LightGBM, scikit-learn, sentence-transformers,
-FAISS, Groq (Llama 3.3), pytest, Docker, GitHub Actions.
+Python, FastAPI, SQLAlchemy, Alembic, Postgres/SQLite, Redis, PyJWT, LightGBM,
+scikit-learn, sentence-transformers, FAISS, Groq (Llama 3.3), pytest, Docker,
+GitHub Actions.

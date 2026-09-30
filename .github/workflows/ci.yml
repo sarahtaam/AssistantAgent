@@ -6,9 +6,36 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
+    name: Tests (${{ matrix.database }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, postgres]
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: novatel
+          POSTGRES_PASSWORD: novatel
+          POSTGRES_DB: novatel
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U novatel" --health-interval 5s
+          --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 3s --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -17,11 +44,23 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Install core dependencies
-        run: pip install -r requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
 
-      - name: Seed demo database
-        run: python seed.py
+      # The SQLite leg uses the defaults (throwaway SQLite file, in-memory
+      # sessions); the Postgres leg also exercises the Redis backends.
+      - name: Point at Postgres + Redis
+        if: matrix.database == 'postgres'
+        run: |
+          echo "DATABASE_URL=postgresql+psycopg://novatel:novatel@localhost:5432/novatel" >> "$GITHUB_ENV"
+          echo "REDIS_URL=redis://localhost:6379/0" >> "$GITHUB_ENV"
+
+      - name: Migrations match models
+        if: matrix.database == 'postgres'
+        run: |
+          alembic upgrade head
+          alembic check
+          alembic downgrade base
 
       - name: Train ML model
         run: python recouvrement/train.py
@@ -34,3 +73,13 @@ jobs:
 
       - name: Run tests
         run: pytest tests/ -v
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build -t assistant-agent:ci .
+      - name: Runs as non-root
+        run: test "$(docker run --rm --entrypoint id assistant-agent:ci -u)" != "0"
