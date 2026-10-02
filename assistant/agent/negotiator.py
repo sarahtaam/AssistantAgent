@@ -42,6 +42,8 @@ _VALID_INTENTS = frozenset([
 ])
 PAYMENT_INTENTS = frozenset([INTENT_PLAN_REQUEST, INTENT_COMPLAINT, INTENT_SUPPORT_REQUEST, INTENT_OTHER])
 
+_CLASSIFY_BUDGET_SECONDS = 4.0
+
 # ── Keyword sets — local fast-path classification ──────────────────────
 # If any of these appear, the message is never OFF_TOPIC.
 _DOMAIN_WORDS = frozenset([
@@ -167,7 +169,10 @@ class Negotiator:
         try:
             llm = get_groq_client()
             prompt = PromptTemplates.intent_with_examples(message)
-            result = llm.complete([{"role": "user", "content": prompt}], max_tokens=15, temperature=0.0)
+            # Short budget: this runs before the main reply, and "OTHER" is a
+            # safe answer if the LLM is slow.
+            result = llm.complete([{"role": "user", "content": prompt}], max_tokens=15, temperature=0.0,
+                                  budget_seconds=_CLASSIFY_BUDGET_SECONDS)
             intent = result.strip().upper().split()[0]
             if intent not in _VALID_INTENTS:
                 return INTENT_OTHER

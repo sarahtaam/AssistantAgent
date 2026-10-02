@@ -111,7 +111,8 @@ class RAGRetriever:
             ))
 
         results.sort(key=lambda r: r.score, reverse=True)
-        logger.debug("RAG '%s...' -> %d results (threshold=%.2f)", query[:40], len(results), threshold)
+        # The query contains the client's message: log its size, not its text.
+        logger.debug("RAG query (len=%d) -> %d results (threshold=%.2f)", len(query), len(results), threshold)
         return results
 
     def retrieve_as_context(self, query: str, top_k: int = 4, sep: str = "\n\n---\n\n") -> str:

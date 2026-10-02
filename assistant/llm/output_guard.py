@@ -17,6 +17,7 @@ import re
 import logging
 from typing import Tuple
 
+import metrics
 from config import MAX_REALISTIC_AMOUNT, CURRENCY_SYMBOL
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,9 @@ def sanitize_user_input(message: str) -> str:
 
     found, label = _match_patterns(message, _INJECTION_PATTERNS)
     if found:
-        logger.warning("Input guard — %s: '%s…'", label, message[:60])
+        # Log the rule that matched, never the text itself (personal data).
+        logger.warning("Input guard — %s (msg_len=%d)", label, len(message))
+        metrics.GUARDRAIL_BLOCKS.labels(guard="input", reason=label).inc()
         return "I'd like information about my invoices and payment options."
     return message
 
@@ -134,18 +137,22 @@ def validate_and_sanitize(response: str) -> Tuple[bool, str]:
     found, label = _match_patterns(response, _LEAK_PATTERNS)
     if found:
         logger.warning("Output guard — leak (%s)", label)
+        metrics.GUARDRAIL_BLOCKS.labels(guard="output", reason=label).inc()
         return False, f"I can't display that information. Please contact {SUPPORT_PHONE}."
 
     found, label = _match_patterns(response, _INJECTION_PATTERNS)
     if found:
         logger.warning("Output guard — output injection (%s)", label)
+        metrics.GUARDRAIL_BLOCKS.labels(guard="output", reason=label).inc()
         return False, "I can't respond to that request."
 
     if not _check_amounts(response):
+        metrics.GUARDRAIL_BLOCKS.labels(guard="output", reason="unrealistic_amount").inc()
         return False, f"An inconsistency was detected. Please contact {SUPPORT_PHONE}."
 
     if not is_domain:
         logger.info("Output guard — response has no domain keywords -> OFF_TOPIC.")
+        metrics.GUARDRAIL_BLOCKS.labels(guard="output", reason="off_topic").inc()
         return False, OFF_TOPIC_RESPONSE
 
     return True, _sanitize_text(response)

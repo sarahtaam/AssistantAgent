@@ -160,9 +160,10 @@ probing, unrealistic amounts, genuine off-topic messages):
 | Input sanitization | 18/18 (100%) |
 | Output validation | 14/14 (100%) |
 
-**Test suite:** 129 tests across guardrails, intent classification,
+**Test suite:** 152 tests across guardrails, intent classification,
 payment-plan math, authentication and authorization, session ownership,
-rate limiting, both session backends, and the data-access queries
+rate limiting, both session backends, the data-access queries, plan
+confirmation idempotency, log privacy, LLM time budgets and monitoring
 (`pytest tests/ -v`). CI runs the suite twice: once on SQLite with in-memory
 sessions, once on Postgres + Redis.
 
@@ -240,6 +241,13 @@ Two things that fail *gracefully* rather than breaking the app:
   at `MAX_MESSAGE_LENGTH` characters.
 - **CORS.** Only origins in `CORS_ALLOWED_ORIGINS` are allowed; credentials
   mode is off, since tokens go in the `Authorization` header.
+- **One plan per client.** Confirming is idempotent: a double click, a
+  retried request or a second session can't create a second plan. The
+  session claim, a database check and a unique index on confirmed plans
+  each enforce it.
+- **No personal data in logs.** Logs record ids, never what clients typed;
+  email addresses and phone numbers are masked (`a***@example.com`), and SQL
+  errors hide their parameters in production.
 
 ## Deploying
 
@@ -265,9 +273,36 @@ characters for HS256), and CORS origins without `*`.
 - **Model.** Put the `model_*.pkl` files trained on real data in
   `recouvrement/` before `docker build`. Without them, the build trains a
   model on synthetic data, which is only good enough for a demo.
+- **LLM latency** is capped: each LLM call gets `LLM_TOTAL_TIMEOUT_SECONDS`
+  (default 15) across all retries, intent classification 4. When the budget
+  runs out the client gets the deterministic reply instead of waiting.
+  Confirmation emails are sent in the background, so a slow mail server
+  never delays a response.
+
+## Monitoring
+
+- **Logs** are JSON lines in production (`LOG_FORMAT=json`), one access line
+  per request with method, route, status and duration. Every line carries a
+  request id, also returned as the `X-Request-ID` response header. A valid
+  incoming `X-Request-ID` (from your load balancer) is reused.
+- **Metrics** at `GET /metrics` for Prometheus, enabled by setting
+  `METRICS_TOKEN` and scraped with `Authorization: Bearer <METRICS_TOKEN>`.
+  Aggregated across all workers (`PROMETHEUS_MULTIPROC_DIR`, set in the
+  image). Includes `http_requests_total`, `http_request_duration_seconds`,
+  `llm_requests_total{outcome}`, `llm_request_duration_seconds`,
+  `degraded_replies_total`, `guardrail_blocks_total`,
+  `rate_limited_requests_total` and `payment_plans_confirmed_total`.
+- **Errors** go to Sentry when `SENTRY_DSN` is set, without request bodies,
+  local variables or user details.
+- **Alerts** worth setting up in Prometheus/Alertmanager or your provider:
+  5xx rate above 1% of `http_requests_total`; p95 of
+  `http_request_duration_seconds` above 10s on `/client/assistant/chat`;
+  `llm_requests_total{outcome="error"}` above 20% of LLM calls (users are
+  getting fallback replies); `/ready` failing; a jump in
+  `guardrail_blocks_total` (someone probing the agent).
 
 ## Stack
 
-Python, FastAPI, SQLAlchemy, Alembic, Postgres/SQLite, Redis, PyJWT, LightGBM,
+Python, FastAPI, SQLAlchemy, Alembic, Postgres/SQLite, Redis, PyJWT, Prometheus, Sentry, LightGBM,
 scikit-learn, sentence-transformers, FAISS, Groq (Llama 3.3), pytest, Docker,
 GitHub Actions.

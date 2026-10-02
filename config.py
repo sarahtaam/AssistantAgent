@@ -67,6 +67,21 @@ CORS_ALLOWED_ORIGINS = _csv(os.getenv("CORS_ALLOWED_ORIGINS", ""))
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 MAX_MESSAGE_LENGTH = int(os.getenv("MAX_MESSAGE_LENGTH", "2000"))
+# Upper bounds on how long one LLM call may hold a request: per HTTP attempt,
+# and in total across retries. Past the total, the agent answers with its
+# deterministic fallback instead of keeping the client waiting.
+LLM_REQUEST_TIMEOUT_SECONDS = float(os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "10"))
+LLM_TOTAL_TIMEOUT_SECONDS = float(os.getenv("LLM_TOTAL_TIMEOUT_SECONDS", "15"))
+
+# ── Observability ─────────────────────────────────────────────────────────
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+# "json" (one JSON object per line, for log aggregators) or "text".
+LOG_FORMAT = os.getenv("LOG_FORMAT", "json" if IS_PRODUCTION else "text").lower()
+# /metrics is served only when this is set, and only with this bearer token.
+METRICS_TOKEN = os.getenv("METRICS_TOKEN", "")
+# Optional error tracking (Sentry or a compatible service).
+SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+SENTRY_TRACES_SAMPLE_RATE = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0"))
 
 # ── Risk-tiering thresholds (business rules, not proprietary — a common
 #    industry pattern for graduated collections strategies) ────────────────
@@ -106,6 +121,8 @@ def validate_settings() -> None:
             problems.append("CORS_ALLOWED_ORIGINS must list explicit origins, not '*'.")
         if DATABASE_URL.startswith("sqlite"):
             problems.append("DATABASE_URL points at SQLite; use Postgres in production.")
+        if METRICS_TOKEN and len(METRICS_TOKEN) < 24:
+            problems.append("METRICS_TOKEN must be at least 24 characters.")
 
     if problems:
         raise RuntimeError("Invalid configuration:\n  - " + "\n  - ".join(problems))

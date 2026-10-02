@@ -45,7 +45,8 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     APP_ENV=production \
     WEB_CONCURRENCY=2 \
-    RUN_MIGRATIONS=true
+    RUN_MIGRATIONS=true \
+    PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus
 
 COPY --from=builder /opt/venv /opt/venv
 
@@ -62,4 +63,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 
 ENTRYPOINT ["sh", "/app/docker-entrypoint.sh"]
 # --proxy-headers trusts X-Forwarded-* only from FORWARDED_ALLOW_IPS (your load balancer).
-CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY} --proxy-headers --forwarded-allow-ips=${FORWARDED_ALLOW_IPS:-127.0.0.1} --no-server-header"]
+# Access logging is done by the app (JSON, with request ids), not uvicorn.
+CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY} --proxy-headers --forwarded-allow-ips=${FORWARDED_ALLOW_IPS:-127.0.0.1} --no-server-header --no-access-log"]

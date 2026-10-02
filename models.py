@@ -131,3 +131,13 @@ payment_plans = sa.Table(
     sa.Column("created_at", sa.DateTime, nullable=False, server_default=_now),
     sa.Column("updated_at", sa.DateTime),
 )
+
+# At most one active (CONFIRMED) plan per client — the database-level
+# guarantee behind confirm_plan()'s checks, which holds across workers.
+sa.Index(
+    "uq_payment_plans_one_confirmed_per_client",
+    payment_plans.c.client_id,
+    unique=True,
+    sqlite_where=payment_plans.c.status == "CONFIRMED",
+    postgresql_where=payment_plans.c.status == "CONFIRMED",
+)

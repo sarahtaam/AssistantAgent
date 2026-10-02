@@ -129,6 +129,21 @@ class SessionStore:
     def get_confirmed_plan(self, session_id: str) -> Optional[dict]:
         return (self._load(session_id) or {}).get("confirmed_plan")
 
+    def claim_confirmation(self, session_id: str, plan: dict) -> bool:
+        """Atomically marks `plan` as this session's confirmed plan. Returns
+        False if the session already has one (or doesn't exist), so a double
+        click or a retried request can't confirm twice."""
+        def claim(session: dict) -> bool:
+            if session.get("confirmed_plan"):
+                return False
+            session["confirmed_plan"] = plan
+            return True
+        return bool(self._mutate(session_id, claim))
+
+    def release_confirmation(self, session_id: str) -> None:
+        """Undoes claim_confirmation() when saving the plan failed."""
+        self.set_confirmed_plan(session_id, None)
+
     # ── Free-form context ─────────────────────────────────────────────
     def set_context(self, session_id: str, key: str, value: Any) -> None:
         self._mutate(session_id, lambda s: s["context"].__setitem__(key, value))

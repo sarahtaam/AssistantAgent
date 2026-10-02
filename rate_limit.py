@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Tuple
 
 from fastapi import Depends, HTTPException, status
 
+import metrics
 from auth import Principal, require_client
 from config import LLM_RATE_LIMITS
 from redis_client import get_redis
@@ -95,6 +96,7 @@ def limit_llm_calls(principal: Principal = Depends(require_client)) -> Principal
     """FastAPI dependency: authenticates a client and applies the LLM limits."""
     retry_after = llm_limiter.hit("llm", principal.subject)
     if retry_after is not None:
+        metrics.RATE_LIMITED.inc()
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many requests. Please slow down.",

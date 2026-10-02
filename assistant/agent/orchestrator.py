@@ -13,6 +13,7 @@ from typing import List, Optional, Tuple
 
 from sqlalchemy import Date, bindparam, text
 
+import metrics
 from config import COMPANY_NAME, CURRENCY_SYMBOL
 from db import days_between, get_db_connection, months_ago
 from recouvrement.scoring import calculer_score_client
@@ -25,7 +26,7 @@ from assistant.llm.prompt_templates import (
 from assistant.llm.output_guard import sanitize_user_input, validate_and_sanitize
 from assistant.memory.short_term import SessionOwnershipError, session_memory
 from assistant.memory.long_term import (
-    save_payment_plan, get_client_long_term_history,
+    PlanAlreadyConfirmedError, get_active_plan, save_payment_plan, get_client_long_term_history,
     save_interaction_summary, notify_admin, get_client_plans,
 )
 from assistant.agent.negotiator import (
@@ -387,7 +388,8 @@ class AssistantAgent:
             return support_response
 
         intent = neg.classify_intent(message)
-        logger.info("Intent=%s | msg='%s…'", intent, message[:50])
+        # Never log message text: it's personal data (see privacy.py).
+        logger.info("Intent=%s | client=%d | msg_len=%d", intent, client_id, len(message))
 
         rag_context, rag_sources = _get_rag_context(message, client_ctx)
 
@@ -418,6 +420,7 @@ class AssistantAgent:
             # pure Python. So when it's unavailable we still serve a complete,
             # correct answer — options included — with canned wording.
             logger.warning("LLM unavailable — serving deterministic reply: %s", exc)
+            metrics.DEGRADED_REPLIES.inc()
             fallback_options = (
                 neg.get_payment_options(total_impaye, scoring["score"]) if show_options else []
             )
@@ -505,21 +508,37 @@ class AssistantAgent:
         if not self._require_owned_session(session_id, client_id):
             return {"success": False, "message": SESSION_EXPIRED_MSG}
 
+        active = get_active_plan(client_id)
+        if active:
+            return self._already_confirmed(active["id"])
+
         plans = session_memory.get_proposed_plans(session_id)
         chosen = next((p for p in plans if p["id"] == option_id), None) or session_memory.get_context(session_id, "pending_plan")
         if not chosen:
             return {"success": False, "message": "Invalid option."}
 
+        # Claim before the slow part (LLM summary) so a double click or a
+        # retried request can't confirm the same plan twice.
+        if not session_memory.claim_confirmation(session_id, chosen):
+            return self._already_confirmed(None)
+
         confirmed_at = datetime.now().strftime("%Y-%m-%d %H:%M")
         neg = get_negotiator()
         summary = neg.generate_plan_summary(client_id, chosen, confirmed_at)
 
-        plan_id = save_payment_plan(client_id, session_id, chosen, summary)
-        save_interaction_summary(client_id, session_id, summary)
-        if plan_id:
-            notify_admin(client_id, plan_id, summary)
+        try:
+            plan_id = save_payment_plan(client_id, session_id, chosen, summary)
+        except PlanAlreadyConfirmedError:
+            # Another session confirmed a plan for this client in the meantime.
+            active = get_active_plan(client_id)
+            return self._already_confirmed(active["id"] if active else None)
+        if plan_id is None:
+            session_memory.release_confirmation(session_id)
+            return {"success": False, "message": "We couldn't save your plan just now. Please try again in a moment."}
 
-        session_memory.set_confirmed_plan(session_id, chosen)
+        save_interaction_summary(client_id, session_id, summary)
+        notify_admin(client_id, plan_id, summary)
+        metrics.PLANS_CONFIRMED.inc()
 
         client = _fetch_client_info(client_id)
         prenom = client["prenom"] if client else ""
@@ -543,6 +562,13 @@ class AssistantAgent:
         if result.get("response"):
             session_memory.add_message(session_id, "assistant", result["response"])
         return result
+
+    def _already_confirmed(self, plan_id: Optional[int]) -> dict:
+        return {
+            "success": False, "already_confirmed": True, "plan_id": plan_id,
+            "message": "You already have a confirmed payment plan. "
+                       f"Contact {COMPANY_NAME} support if you need to change it.",
+        }
 
     def _require_owned_session(self, session_id: str, client_id: int) -> bool:
         """True if the session is live and belongs to client_id, False if it

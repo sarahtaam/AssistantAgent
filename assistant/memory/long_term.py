@@ -5,21 +5,58 @@ notifications. SQLite in this demo; swap DATABASE_URL for Postgres
 in production without touching this module — the queries here only use
 SQL both dialects accept (CURRENT_TIMESTAMP, INSERT ... RETURNING).
 """
+import contextvars
 import json
 import logging
-from typing import Dict, List, Optional
+from concurrent.futures import Future, ThreadPoolExecutor, wait
+from typing import Dict, List, Optional, Set
 
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from config import COMPANY_NAME, CURRENCY_SYMBOL, SUPPORT_PHONE
 from db import get_db_connection
+from privacy import mask_contact
 
 logger = logging.getLogger(__name__)
+
+# Confirmation emails are sent off the request path: a slow or unreachable
+# SMTP server must not hold up the client's "plan confirmed" response.
+# Pending sends still finish on a graceful shutdown (executor threads are
+# joined at interpreter exit).
+_mail_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mailer")
+_pending_emails: Set[Future] = set()
+
+
+class PlanAlreadyConfirmedError(Exception):
+    """The client already has a CONFIRMED plan (unique index violation)."""
+
+
+def drain_email_queue(timeout: float = 10.0) -> None:
+    """Waits for queued confirmation emails (used by tests)."""
+    wait(list(_pending_emails), timeout=timeout)
 
 
 # ── Payment plans ────────────────────────────────────────────────────
 
+def get_active_plan(client_id: int) -> Optional[Dict]:
+    """The client's CONFIRMED plan, if any."""
+    conn = get_db_connection()
+    try:
+        row = conn.execute(text("""
+            SELECT id, session_id, plan_data, summary, status, created_at
+            FROM payment_plans WHERE client_id = :cid AND status = 'CONFIRMED'
+            ORDER BY created_at DESC LIMIT 1
+        """), {"cid": client_id}).fetchone()
+        return dict(row._mapping) if row else None
+    finally:
+        conn.close()
+
+
 def save_payment_plan(client_id: int, session_id: str, plan_data: dict, summary: str) -> Optional[int]:
+    """Saves a CONFIRMED plan and queues the confirmation email. Returns the
+    plan id, or None on a database error. Raises PlanAlreadyConfirmedError
+    if the client already has a confirmed plan."""
     conn = get_db_connection()
     try:
         row = conn.execute(text("""
@@ -35,15 +72,21 @@ def save_payment_plan(client_id: int, session_id: str, plan_data: dict, summary:
         conn.commit()
         plan_id = row[0]
         logger.info("Payment plan #%d created for client %d", plan_id, client_id)
-
-        _envoyer_email_plan(client_id, plan_data, summary)
-        return plan_id
-    except Exception as exc:
+    except IntegrityError:
         conn.rollback()
-        logger.error("save_payment_plan error: %s", exc)
+        raise PlanAlreadyConfirmedError(client_id)
+    except Exception:
+        conn.rollback()
+        logger.exception("save_payment_plan failed for client %d", client_id)
         return None
     finally:
         conn.close()
+
+    # copy_context: the mailer's log lines keep this request's request id.
+    future = _mail_executor.submit(contextvars.copy_context().run, _envoyer_email_plan, client_id, plan_data, summary)
+    _pending_emails.add(future)
+    future.add_done_callback(_pending_emails.discard)
+    return plan_id
 
 
 def _envoyer_email_plan(client_id: int, plan_data: dict, summary: str) -> None:
@@ -82,9 +125,9 @@ Cordially,
         envoyer_email_simulation(dest, f"Payment plan confirmed - {COMPANY_NAME}", corps)
         # The mailer logs the actual outcome (really sent vs. simulated),
         # so don't claim delivery here.
-        logger.info("Plan confirmation email handed to mailer -> %s", dest)
-    except Exception as exc:
-        logger.error("Plan email error: %s", exc)
+        logger.info("Plan confirmation email handed to mailer -> %s", mask_contact(dest))
+    except Exception:
+        logger.exception("Plan email error for client %d", client_id)
     finally:
         conn.close()
 

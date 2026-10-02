@@ -16,7 +16,7 @@ from typing import Optional, Union
 
 from sqlalchemy import create_engine
 
-from config import DATABASE_URL
+from config import DATABASE_URL, IS_PRODUCTION
 
 _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -47,6 +47,9 @@ _engine = create_engine(
     # Drop connections the server closed (DB restart, idle timeout) instead
     # of failing the next request with them.
     pool_pre_ping=not _is_sqlite,
+    # SQL error messages otherwise include the bound values (names, message
+    # text, plan summaries), which then end up in logs and error reports.
+    hide_parameters=IS_PRODUCTION,
 )
 
 

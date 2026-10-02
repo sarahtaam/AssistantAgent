@@ -23,6 +23,8 @@ services:
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       COMPANY_NAME: ${COMPANY_NAME:-NovaTel}
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
     depends_on:
       db:
         condition: service_healthy

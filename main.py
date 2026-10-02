@@ -11,6 +11,7 @@ Endpoints                                        Auth
 ──────────────────────────────────────────────────────────────────────
 GET  /health                                → —        liveness check
 GET  /ready                                 → —        DB + Redis reachable
+GET  /metrics                               → token    Prometheus metrics (METRICS_TOKEN)
 GET  /client/assistant/auto-session/{id}    → client   session + personalized welcome
 POST /client/assistant/chat                 → client*  message -> agent response
 POST /client/assistant/option-click         → client*  click on an interactive option
@@ -26,17 +27,20 @@ Errors: handlers log the full traceback server-side and return a generic
 500 body. Internal exception text (SQL, file paths) is deliberately never
 echoed back to the caller.
 """
+import hmac
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 import config
+import metrics
+import observability
 from assistant.agent.orchestrator import get_agent
 from assistant.memory.short_term import SessionOwnershipError
 from assistant.support_service import ComplaintType
@@ -47,7 +51,8 @@ from recouvrement.predict import score_combine
 from recouvrement.scoring import calculer_score_client
 import redis_client
 
-logging.basicConfig(level=logging.INFO)
+observability.setup_logging()
+observability.setup_error_tracking()
 logger = logging.getLogger(__name__)
 
 _INTERNAL_ERROR = "Internal error."
@@ -73,8 +78,11 @@ app.add_middleware(
     allow_origins=config.CORS_ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+    expose_headers=["X-Request-ID", "Retry-After"],
 )
+# Added last = outermost: times and logs every request, CORS preflights included.
+app.add_middleware(observability.RequestContextMiddleware)
 
 
 @app.exception_handler(SessionOwnershipError)
@@ -138,6 +146,19 @@ def ready():
 
     ok = all(checks.values())
     return JSONResponse(status_code=200 if ok else 503, content={"status": "ok" if ok else "unavailable", **checks})
+
+
+@app.get("/metrics", include_in_schema=False)
+def metrics_endpoint(request: Request):
+    """Prometheus scrape target. Hidden (404) unless METRICS_TOKEN is set,
+    and then only served to `Authorization: Bearer <METRICS_TOKEN>`."""
+    if not config.METRICS_TOKEN:
+        raise HTTPException(status_code=404)
+    supplied = request.headers.get("authorization", "")
+    if not hmac.compare_digest(supplied.encode(), f"Bearer {config.METRICS_TOKEN}".encode()):
+        raise HTTPException(status_code=401, headers={"WWW-Authenticate": "Bearer"})
+    body, content_type = metrics.render()
+    return Response(content=body, media_type=content_type)
 
 
 @app.get("/client/assistant/auto-session/{client_id}")
